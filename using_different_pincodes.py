@@ -6,50 +6,61 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.chrome.options import Options
+import time
 
 # Setup
 options = Options()
-# comment next line to see browser
+# Comment this to see the browser
 # options.add_argument("--headless")
 options.add_argument("--disable-blink-features=AutomationControlled")
+
 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-
-# Load the Amazon URL
-url = "https://www.amazon.ca/s?k=kids+superhero+tshirts&crid=3CHBNPS7CLM95&refresh=1&sprefix=kids+superhero+tshir%2Caps%2C317&ref=glow_cls"
-driver.get(url)
-
 wait = WebDriverWait(driver, 15)
 
+# Step 1: Go to Amazon homepage
+driver.get("https://www.amazon.ca/")
+
 try:
-    # Step 1: Click the "Update location" link
-    update_loc = wait.until(EC.element_to_be_clickable((By.ID, "glow-ingress-block")))
+    # 🛡️ Step 1.5: If "Continue shopping" screen appears, click it
+    try:
+        continue_btn = WebDriverWait(driver, 5).until(
+            EC.element_to_be_clickable((By.XPATH, "//input[@value='Continue shopping']"))
+        )
+        print("Found bot check screen. Clicking continue...")
+        continue_btn.click()
+        time.sleep(2)
+    except:
+        print("No bot check screen, continuing normally...")
+
+    # Step 2: Click the "Deliver to" location box
+    update_loc = wait.until(EC.element_to_be_clickable((By.ID, "nav-global-location-popover-link")))
     update_loc.click()
 
-    # Step 2: Wait for postal code input to appear
+    # Step 3: Enter postal code (M5V 3L)
     postal_input1 = wait.until(EC.presence_of_element_located((By.ID, "GLUXZipUpdateInput_0")))
     postal_input2 = wait.until(EC.presence_of_element_located((By.ID, "GLUXZipUpdateInput_1")))
 
-    # Step 3: Enter postal code (M5V 3L)
     postal_input1.clear()
     postal_input1.send_keys("M5V")
-
     postal_input2.clear()
-    postal_input2.send_keys("3L")
+    postal_input2.send_keys("3L9")
 
     # Step 4: Click Apply
     apply_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "span#GLUXZipUpdate .a-button-input")))
     apply_btn.click()
 
-    # Optional: Wait to let the page refresh after location change
-    wait.until(EC.presence_of_element_located((By.ID, "glow-ingress-line2")))
+    time.sleep(3)
+    driver.refresh()
 
-    print("Postal code updated!")
-    print(driver.current_url)
+    # Step 5: Enter search term
+    search_box = wait.until(EC.presence_of_element_located((By.ID, "twotabsearchtextbox")))
+    search_box.clear()
+    search_box.send_keys("Kids Superhero T Shirts")
+    search_box.send_keys(Keys.RETURN)
+
+    print("✅ Search completed. URL:", driver.current_url)
+
 except Exception as e:
-    print("Something went wrong:", e)
+    print("❌ Error occurred:", e)
 
-# Optional: Save HTML or screenshot
-# with open("page.html", "w", encoding="utf-8") as f:
-#     f.write(driver.page_source)
-
-driver.quit()
+# driver.quit()  # Uncomment when you're done
