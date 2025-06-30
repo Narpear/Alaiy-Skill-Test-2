@@ -12,13 +12,14 @@ import json
 import re
 
 
-class AmazonScraper:
+class AmazonUKScraper:
     def __init__(self, headless=False):
-        """Initialize the Amazon scraper with Chrome driver"""
+        """Initialize the Amazon UK scraper with Chrome driver"""
         self.options = Options()
         if headless:
             self.options.add_argument("--headless")
         self.options.add_argument("--disable-blink-features=AutomationControlled")
+        self.options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         
         self.driver = webdriver.Chrome(
             service=Service(ChromeDriverManager().install()), 
@@ -27,64 +28,111 @@ class AmazonScraper:
         self.wait = WebDriverWait(self.driver, 15)
         
     def setup_amazon(self):
-        """Navigate to Amazon homepage and handle bot checks"""
-        print("🚀 Starting Amazon scraper...")
-        self.driver.get("https://www.amazon.ca/")
+        """Navigate to Amazon UK homepage and handle bot checks"""
+        print("-> Starting Amazon UK scraper...")
+        self.driver.get("https://www.amazon.co.uk/")
         
-        # Handle "Continue Shopping" screen (bot check)
+        # Handle cookies consent if it appears
         try:
-            continue_btn = WebDriverWait(self.driver, 5).until(
-                EC.element_to_be_clickable((By.XPATH, "//input[@value='Continue shopping']"))
+            cookies_btn = WebDriverWait(self.driver, 3).until(
+                EC.element_to_be_clickable((By.ID, "sp-cc-accept"))
             )
-            print("🛡️ Bot check screen detected. Clicking continue...")
-            continue_btn.click()
-            time.sleep(2)
+            print("🍪 Accepting cookies...")
+            cookies_btn.click()
+            time.sleep(1)
         except:
-            print("✅ No bot check screen. Proceeding...")
+            print("No cookies banner detected.")
     
-    def set_location(self, postal_code, location_name):
-        """Set the delivery location using postal code"""
-        print(f"📍 Setting location to {location_name} ({postal_code})...")
+    def set_location(self, postcode, location_name):
+        """Set the delivery location using UK postcode"""
+        print(f"📍 Setting location to {location_name} ({postcode})...")
         
         try:
             # Click the "Deliver to" location box
-            update_loc = self.wait.until(
-                EC.element_to_be_clickable((By.ID, "nav-global-location-popover-link"))
-            )
-            update_loc.click()
+            location_selectors = [
+                "#nav-global-location-popover-link",
+                "#glow-ingress-block",
+                "[data-csa-c-content-id='nav_youraccount_btn']",
+                "#nav-global-location-slot"
+            ]
             
-            # Split postal code (e.g., "M5V 3L9" -> "M5V" and "3L9")
-            parts = postal_code.split()
-            if len(parts) != 2:
-                raise ValueError(f"Invalid postal code format: {postal_code}")
+            location_button = None
+            for selector in location_selectors:
+                try:
+                    location_button = self.wait.until(
+                        EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                    )
+                    break
+                except:
+                    continue
             
-            # Enter postal code parts
-            postal_input1 = self.wait.until(
-                EC.presence_of_element_located((By.ID, "GLUXZipUpdateInput_0"))
-            )
-            postal_input2 = self.wait.until(
-                EC.presence_of_element_located((By.ID, "GLUXZipUpdateInput_1"))
-            )
+            if not location_button:
+                raise Exception("Could not find location button")
             
-            postal_input1.clear()
-            postal_input1.send_keys(parts[0])
-            postal_input2.clear()
-            postal_input2.send_keys(parts[1])
+            location_button.click()
+            time.sleep(2)
+
+            # Wait for the postcode input field to appear (UK has a single input field)
+            postcode_selectors = [
+                "input[name='GLUXZipUpdateInput']",
+                "#GLUXZipUpdateInput",
+                "input[placeholder*='postcode']",
+                "input[aria-label*='postcode']"
+            ]
             
-            # Click Apply
-            apply_btn = self.wait.until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, "span#GLUXZipUpdate .a-button-input"))
-            )
+            postcode_input = None
+            for selector in postcode_selectors:
+                try:
+                    postcode_input = self.wait.until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                    )
+                    break
+                except:
+                    continue
+            
+            if not postcode_input:
+                raise Exception("Could not find postcode input field")
+
+            postcode_input.clear()
+            postcode_input.send_keys(postcode)
+            time.sleep(1)
+
+            # Click Apply button
+            apply_selectors = [
+                "span#GLUXZipUpdate .a-button-input",
+                "#GLUXZipUpdate input[type='submit']",
+                "input[aria-labelledby='GLUXZipUpdate-announce']",
+                ".a-popover-footer .a-button-primary input"
+            ]
+            
+            apply_btn = None
+            for selector in apply_selectors:
+                try:
+                    apply_btn = self.wait.until(
+                        EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                    )
+                    break
+                except:
+                    continue
+            
+            if not apply_btn:
+                raise Exception("Could not find Apply button")
+            
             apply_btn.click()
-            
-            # Wait and refresh to update location
+
+            # Wait for location to update
             time.sleep(3)
-            self.driver.refresh()
-            print(f"✅ Location set to {location_name}")
             
+            # Optional: Refresh to ensure location is set
+            self.driver.refresh()
+            time.sleep(2)
+            
+            print(f"✅ Location set to {location_name}")
+
         except Exception as e:
             print(f"❌ Error setting location: {e}")
-            raise
+            # Try to continue without failing completely
+            print("⚠️ Continuing without location setting...")
     
     def search_products(self, search_term):
         """Search for products using the given search term"""
@@ -108,19 +156,42 @@ class AmazonScraper:
     def extract_product_urls_from_page(self):
         """Extract product URLs from current page"""
         try:
-            product_elements = self.wait.until(
-                EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'a.a-link-normal.s-no-outline'))
+            # Wait for products to load
+            self.wait.until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, '[data-component-type="s-search-result"]'))
             )
             
+            # Multiple selectors to find product links
+            product_selectors = [
+                'a.a-link-normal.s-no-outline',
+                'h2.a-size-mini a',
+                '[data-component-type="s-search-result"] h2 a',
+                '.s-result-item h2 a',
+                'a[href*="/dp/"]'
+            ]
+            
             page_urls = set()
-            for elem in product_elements:
-                href = elem.get_attribute("href")
-                if href:
-                    full_url = "https://www.amazon.ca" + href if href.startswith("/") else href
-                    
-                    # Filter out ad URLs
-                    if "/sspa/" not in full_url and not full_url.startswith("https://aax-"):
-                        page_urls.add(full_url)
+            
+            for selector in product_selectors:
+                try:
+                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    for elem in elements:
+                        href = elem.get_attribute("href")
+                        if href:
+                            # Normalize relative URLs
+                            if href.startswith("/"):
+                                full_url = "https://www.amazon.co.uk" + href
+                            else:
+                                full_url = href
+
+                            # Accept only product links from amazon.co.uk
+                            if "amazon.co.uk" in full_url and \
+                            ("/dp/" in full_url or "/gp/product/" in full_url) and \
+                            "/sspa/" not in full_url and \
+                            not full_url.startswith("https://aax-"):
+                                page_urls.add(full_url)
+                except Exception:
+                    continue
             
             return page_urls
             
@@ -209,7 +280,7 @@ class AmazonScraper:
                 # Wait for products to load on new page
                 try:
                     WebDriverWait(self.driver, 15).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, 'a.a-link-normal.s-no-outline'))
+                        EC.presence_of_element_located((By.CSS_SELECTOR, '[data-component-type="s-search-result"]'))
                     )
                     print(f"   ✅ Page {current_page + 1} loaded successfully")
                     return True
@@ -227,8 +298,8 @@ class AmazonScraper:
     
     def scrape_category(self, search_term, max_products=100):
         """Scrape products for a specific category/search term"""
-        print(f"\n🎯 Starting scrape for: {search_term}")
-        print(f"🔍 Target: {max_products} URLs")
+        print(f"\nStarting scrape for: {search_term}")
+        print(f"Target: {max_products} URLs")
         
         # Search for the category
         self.search_products(search_term)
@@ -237,7 +308,7 @@ class AmazonScraper:
         page_num = 1
         
         while len(product_links) < max_products:
-            print(f"📄 Scraping page {page_num}...")
+            print(f" Scraping page {page_num}...")
             
             # Extract URLs from current page
             page_urls = self.extract_product_urls_from_page()
@@ -255,7 +326,7 @@ class AmazonScraper:
             
             # Check if we have enough products
             if len(product_links) >= max_products:
-                print(f"🎯 Target reached! Collected {len(product_links)} product URLs")
+                print(f" Target reached! Collected {len(product_links)} product URLs")
                 break
             
             # Try to navigate to next page
@@ -268,7 +339,7 @@ class AmazonScraper:
         if len(product_links) > max_products:
             product_links = set(list(product_links)[:max_products])
         
-        print(f"✅ Completed scraping for '{search_term}': {len(product_links)} URLs")
+        print(f" Completed scraping for '{search_term}': {len(product_links)} URLs")
         return list(product_links)
     
     def close(self):
@@ -279,49 +350,49 @@ class AmazonScraper:
 def main():
     """Main function to run the scraping process"""
     
-    # Configuration
+    # Configuration - UK postcodes and locations
     locations = [
-        {"name": "Toronto", "postal_code": "M5V 3L9"},
-        {"name": "Vancouver", "postal_code": "V5H 2K3"}
+        {"name": "London", "postcode": "SE1 9TG"},
+        {"name": "Glasgow", "postcode": "G12 0UE"},
     ]
     
     search_terms = [
         "Kids Superhero T Shirts",
-        "Tapes, Adhesives, Lubricants & Chemicals",
+        "Tapes Adhesives Lubricants Chemicals",
         "Camera Accessories",
         "Home Decor",
         "Superhero Toys",
         "Kitchen Gadgets",
         "Bath Fixtures",
-        "Laptop Bags, Sleeves, Covers",
+        "Laptop Bags Sleeves Covers",
         "Projectors",
         "Superhero Pet Toys"
     ]
     
     max_products_per_category = 100
     
-    # Results storage - New structure: location -> pincode -> categories
+    # Results storage - New structure: location -> postcode -> categories
     results_by_location = []
     
     # Initialize scraper
-    scraper = AmazonScraper(headless=False)  # Set to True to run headless
+    scraper = AmazonUKScraper(headless=False)  # Set to True to run headless
     
     try:
         scraper.setup_amazon()
         
         # Loop through each location
         for location in locations:
-            print(f"\n🌍 {'='*60}")
-            print(f"🌍 PROCESSING LOCATION: {location['name']} ({location['postal_code']})")
-            print(f"🌍 {'='*60}")
+            print(f"\n {'='*60}")
+            print(f" PROCESSING LOCATION: {location['name']} ({location['postcode']})")
+            print(f" {'='*60}")
             
             # Set location
-            scraper.set_location(location['postal_code'], location['name'])
+            scraper.set_location(location['postcode'], location['name'])
             
             # Initialize location data structure
             location_data = {
                 "location": location['name'],
-                "pincode": location['postal_code'],
+                "postcode": location['postcode'],
                 "categories": {}
             }
             
@@ -351,34 +422,34 @@ def main():
             
             # Add location data to results
             results_by_location.append(location_data)
-            print(f"\n✅ Completed all categories for {location['name']}")
+            print(f"\n-> Completed all categories for {location['name']}")
         
         # Save all results to JSON
-        output_filename = "amazon_canada_products.json"
+        output_filename = "amazon_uk_products.json"
         with open(output_filename, "w", encoding='utf-8') as f:
             json.dump(results_by_location, f, indent=2, ensure_ascii=False)
         
         # Print summary
-        print(f"\n🎉 {'='*60}")
-        print(f"🎉 SCRAPING COMPLETED!")
-        print(f"🎉 {'='*60}")
-        print(f"📊 Total categories scraped: {len(search_terms)}")
-        print(f"📊 Total locations: {len(locations)}")
+        print(f"\n {'='*60}")
+        print(f" SCRAPING COMPLETED!")
+        print(f" {'='*60}")
+        print(f"------------ Total categories scraped: {len(search_terms)}")
+        print(f"------------ Total locations: {len(locations)}")
         
         # Calculate totals
         total_urls = 0
         for location_data in results_by_location:
             location_urls = sum(cat_data.get('count', 0) for cat_data in location_data['categories'].values())
             total_urls += location_urls
-            print(f"   📍 {location_data['location']} ({location_data['pincode']}): {location_urls} URLs across {len(location_data['categories'])} categories")
+            print(f"   📍 {location_data['location']} ({location_data['postcode']}): {location_urls} URLs across {len(location_data['categories'])} categories")
         
         print(f"📊 Total URLs collected: {total_urls}")
         print(f"💾 Results saved to: {output_filename}")
         
         # Print detailed breakdown
-        print(f"\n📋 DETAILED BREAKDOWN:")
+        print(f"\n DETAILED BREAKDOWN:")
         for location_data in results_by_location:
-            print(f"\n📍 {location_data['location']} ({location_data['pincode']}):")
+            print(f"\n {location_data['location']} ({location_data['postcode']}):")
             for category, cat_data in location_data['categories'].items():
                 status = "✅" if cat_data['count'] > 0 else "❌"
                 error_info = f" (Error: {cat_data.get('error', 'Unknown')})" if 'error' in cat_data else ""
@@ -388,9 +459,9 @@ def main():
         print(f"❌ Critical error in main process: {e}")
         # Save partial results
         if 'results_by_location' in locals() and results_by_location:
-            with open("amazon_scraping_results_partial.json", "w", encoding='utf-8') as f:
+            with open("amazon_uk_scraping_results_partial.json", "w", encoding='utf-8') as f:
                 json.dump(results_by_location, f, indent=2, ensure_ascii=False)
-            print(f"💾 Saved partial results to: amazon_scraping_results_partial.json")
+            print(f"--------------- Saved partial results to: amazon_uk_scraping_results_partial.json")
     
     finally:
         scraper.close()

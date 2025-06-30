@@ -36,7 +36,7 @@ class AmazonScraper:
         #     continue_btn = WebDriverWait(self.driver, 5).until(
         #         EC.element_to_be_clickable((By.XPATH, "//input[@value='Continue shopping']"))
         #     )
-        #     print("🛡️ Bot check screen detected. Clicking continue...")
+        #     print(" Bot check screen detected. Clicking continue...")
         #     continue_btn.click()
         #     time.sleep(2)
         # except:
