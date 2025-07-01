@@ -4,16 +4,20 @@ from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 
 
 def scrape_amazon_product(url):
     # --- Setup Headless Chrome ---
     options = Options()
-    options.add_argument("--headless")
+    # options.add_argument("--headless")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
     driver = webdriver.Chrome(options=options)
+    wait = WebDriverWait(driver, 10)
 
     driver.get(url)
     time.sleep(4)  # Allow JS to load
@@ -33,22 +37,38 @@ def scrape_amazon_product(url):
     product["price"] = safe_text(soup.select_one(".a-price .a-offscreen"))
     product["deal"] = safe_text(soup.select_one(".dealBadge")) or safe_text(soup.select_one(".savingsPercentage"))
 
+    # --- Main Product Image ---
+    try:
+        # Look for the main product image
+        main_image_selectors = [
+            "#landingImage",
+            "#imgTagWrapperId img",
+            "#imageBlock img[data-old-hires]",
+            "#main-image-container img"
+        ]
+        
+        main_image_url = None
+        for selector in main_image_selectors:
+            img_element = soup.select_one(selector)
+            if img_element:
+                # Try to get high-res version first
+                main_image_url = (img_element.get("data-old-hires") or 
+                                img_element.get("data-a-dynamic-image") or 
+                                img_element.get("src"))
+                if main_image_url:
+                    break
+        
+        product["main_image"] = main_image_url
+    except Exception as e:
+        print(f"Error extracting main image: {e}")
+        product["main_image"] = None
+
     # --- About This Item ---
     product["about_this_item"] = [
         li.get_text(strip=True)
         for li in soup.select("#feature-bullets ul li")
         if li.get_text(strip=True)
     ]
-
-    # --- Specs Table ---
-    specs = {}
-    for section in ["#productDetails_techSpec_section_1", "#productDetails_detailBullets_sections1"]:
-        for row in soup.select(f"{section} tr"):
-            key = safe_text(row.select_one("th"))
-            value = safe_text(row.select_one("td"))
-            if key and value:
-                specs[key] = value
-    product["specs"] = specs
 
     # --- Buy Box Info (Updated for Amazon India) ---
     buybox = {}
@@ -165,12 +185,103 @@ def scrape_amazon_product(url):
     
     product["buybox"] = buybox
 
-    # --- Images ---
-    product["images"] = []
-    for img in soup.select("#altImages img"):
-        src = img.get("src")
-        if src:
-            product["images"].append(src)
+    # --- Child SKU Links (Color/Model Variants) ---
+    product["child_skus"] = []
+
+    try:
+        # Method 1: Look for dimension value list items (most common structure)
+        dimension_items = driver.find_elements(By.CSS_SELECTOR, "li[data-asin][data-csa-c-item-id]")
+        
+        for item in dimension_items:
+            try:
+                asin = item.get_attribute("data-asin")
+                if asin and asin != product["asin"]:  # Don't include current product                 
+                    # Build URL
+                    variant_url = f"https://www.amazon.in/dp/{asin}"
+                    
+                    variant_info = {
+                        "url": variant_url,
+                        "asin": asin
+                    }
+                    
+                    product["child_skus"].append(variant_info)
+                    
+            except Exception as e:
+                continue
+        
+        # Method 2: Fallback - look for any links with /dp/ in variation sections
+        if not product["child_skus"]:
+            variation_links = driver.find_elements(By.CSS_SELECTOR, "#variation_color_name a, #variation_style_name a, [data-dp-url]")
+            
+            for link in variation_links:
+                try:
+                    href = link.get_attribute("href") or link.get_attribute("data-dp-url")
+                    if href and "/dp/" in href:
+                        asin = href.split("/dp/")[1].split("/")[0]
+                        if asin != product["asin"]:
+                            variant_name = link.get_attribute("title") or link.get_attribute("aria-label") or ""
+                            
+                            variant_info = {
+                                "url": href,
+                                "variant_name": variant_name or f"Variant {asin}",
+                                "asin": asin
+                            }
+                            
+                            if not any(sku["asin"] == asin for sku in product["child_skus"]):
+                                product["child_skus"].append(variant_info)
+                                
+                except Exception as e:
+                    continue
+                    
+    except Exception as e:
+        print(f"Error extracting child SKUs: {e}")
+
+    # --- Specs Table ---
+    specs = {}
+    soup = BeautifulSoup(driver.page_source, "html.parser")
+    
+    for section in ["#productDetails_techSpec_section_1", "#productDetails_detailBullets_sections1"]:
+        for row in soup.select(f"{section} tr"):
+            key = safe_text(row.select_one("th"))
+            value = safe_text(row.select_one("td"))
+            if key and value:
+                specs[key] = value
+    product["specs"] = specs
+
+        # --- From the Manufacturer ---
+    product["from_manufacturer"] = {}
+    
+    # Look for A+ content sections
+    aplus_selectors = [
+        "#aplus_feature_div",
+        "[data-aplus-module]",
+        "#aplusBrandStory_feature_div"
+    ]
+    
+    for selector in aplus_selectors:
+        aplus_section = soup.select_one(selector)
+        if aplus_section:
+            # Extract headings and content
+            headings = aplus_section.find_all(['h1', 'h2', 'h3', 'h4', 'h5'])
+            for heading in headings:
+                heading_text = safe_text(heading)
+                if heading_text:
+                    # Get content after heading
+                    content = []
+                    
+                    # Look for next paragraphs or divs
+                    next_elem = heading.find_next_sibling()
+                    while next_elem and next_elem.name not in ['h1', 'h2', 'h3', 'h4', 'h5']:
+                        if next_elem.name in ['p', 'div', 'span']:
+                            text = safe_text(next_elem)
+                            if text and len(text) > 10:  # Avoid short/empty content
+                                content.append(text)
+                        next_elem = next_elem.find_next_sibling()
+                    
+                    if content:
+                        product["from_manufacturer"][heading_text] = content
+            
+            break
 
     driver.quit()
     return product
